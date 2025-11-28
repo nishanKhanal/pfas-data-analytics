@@ -1,55 +1,112 @@
 ---
-title: "Final Project"
+title: "Final Project Activity"
 author: "Kabin, Nishan, Udita"
 date: today
 format:
   html:
+    theme: flatly
     self-contained: true
     embed-resources: true
     toc: true
 execute:
   eval: true  # Evaluate code
   echo: true  # Show code
-  warning: true
-  message: true
+  warning: false
+  message: false
 ---
 
-Load packages necessary for this activity using the code below.
+
 
 ```{r}
+#| echo: false
+
+# Load packages necessary for this activity using the code below.
 library(tidyverse)
 library(knitr)
 library(skimr)
 library(calendR)
 library(flextable)
 library(naniar)
+library(purrr)
 library(sf)
 ```
 
 
-Importing the data from the csv files; there are four data files.
+Importing the data from the csv files; there are four data files, two files containing the data and two files containing the data description .
 
 ```{r}
-pfas_sites <- read_csv("pfas_sites.csv")
-pfas_public_water <- read_csv("pfas_public_water_long.csv")
-pfas_surface_water <- read_csv("pfas_surface_water_long.csv")
-pfas_samples_with_hazard_index <- read_csv("hazard_index.csv")
+sites_main <- read_csv("pfas_data/pfas_sites.csv")
+data_dict_sites <- read_csv("pfas_data/data_dict_sites.csv")
+samples_main <- read_csv("pfas_data/pfas_hazard_index.csv")
+data_dict_samples <- read_csv("pfas_data/data_dict_hazard.csv")
 ```
-# Data Dictionary
 
-
-
-# Data Cleaning
-
-## Data Transformation
 ```{r}
+data_type_sites <- tibble(Variable = names(sites_main), Type = map_chr(sites_main, typeof))
 
-pfas_sites_sf <- pfas_sites |>
+data_dict_sites <- left_join(data_dict_sites, data_type_sites, by = c("Variable"))
+rm(data_type_sites)
+
+data_dict_sites |>
+  select(Variable, Type, Description) |>
+  flextable() |>
+  autofit()
+```
+
+```{r}
+data_type_samples <- tibble(Variable = names(samples_main), Type = map_chr(samples_main, typeof))
+
+data_dict_samples <- left_join(data_dict_samples, data_type_samples, by = c("Variable"))
+rm(data_type_samples)
+
+data_dict_samples |>
+  select(Variable, Type, Description) |>
+  flextable() |>
+  autofit()
+```
+
+
+```{r}
+glimpse(sites_main)
+glimpse(samples_main)
+```
+
+
+
+```{r}
+skim(sites_main)
+skim(samples_main)
+```
+
+
+```{r}
+gg_miss_var(sites_main, show_pct = TRUE)
+gg_miss_var(samples_main, show_pct = TRUE)
+```
+Looking at these plots, it's clear that some variables have too much missing data to be useful for our analysis. We decided to drop `site_background`, `drinking_water_information`, `anticipated_activities`, and `location` from the `pfas_sites` dataset because the gaps in these columns would just get in the way of our work.
+
+```{r}
+sites <- sites_main |>
+  dplyr::select(-site_background, -drinking_water_information, -anticipated_activities, -location)
+
+samples <- samples_main
+```
+
+
+## Data Transformation and Merging
+
+Merging these datasets turned out to be trickier than expected. We couldn't use geoid directly because it identifies counties, not individual sites or samples. And while longitude and latitude were available, they didn't match exactly between the two tables—probably due to measurement differences or rounding.
+So we created a new facility column in the samples data to bridge the gap. Here's what we did: for each sample, we calculated the distance to every site in its county and assigned it to the nearest one. For samples missing a geoid, we found their closest site regardless of county boundaries and used that site's geoid and facility name.
+
+This approach required some assumptions about how samples relate to facilities, but it was necessary to get the two datasets linked together for analysis. Obviously, this introduces some uncertainty into the matching, but it was the best option we had given the data constraints. 
+
+```{r}
+sites_sf <- sites |>
   st_as_sf(coords = c("longitude", "latitude"),
            crs = 4326,   # WGS84
            remove = FALSE)
 
-pfas_samples_sf <- pfas_samples_with_hazard_index |>
+samples_sf <- samples |>
   st_as_sf(coords = c("longitude", "latitude"),
            crs = 4326,
            remove = FALSE)
@@ -57,17 +114,17 @@ pfas_samples_sf <- pfas_samples_with_hazard_index |>
 # EPSG:3591
 # NAD83(NSRS2007) / Michigan Oblique Mercator
 
-pfas_sites_sf   <- st_transform(pfas_sites_sf, 3591)
-pfas_samples_sf <- st_transform(pfas_samples_sf, 3591)
+sites_sf   <- st_transform(sites_sf, 3591)
+samples_sf <- st_transform(samples_sf, 3591)
 ```
 
 
 ```{r}
 # Remove samples with missing geoid
-pfas_samples_sf <- pfas_samples_sf |>
+samples_sf <- samples_sf |>
   filter(!is.na(geoid))
 
-geo_ids <- unique(pfas_samples_sf$geoid)
+geo_ids <- unique(samples_sf$geoid)
 
 ```
 
@@ -95,8 +152,8 @@ populate_nearest_facility <- function(samples, sites) {
 }
 
 samples_with_site <- map(geo_ids, function(g){
-    samples_g <- pfas_samples_sf |> filter(geoid == g)
-    sites_g   <- pfas_sites_sf   |> filter(geoid == g)
+    samples_g <- samples_sf |> filter(geoid == g)
+    sites_g   <- sites_sf   |> filter(geoid == g)
     
     return(populate_nearest_facility(samples_g, sites_g))
 } )
@@ -112,18 +169,8 @@ samples_with_site <- samples_with_site |>
   st_drop_geometry()
 ```
 
-## Merging Data Sets
 ```{r}
-samples_site_df <- inner_join(samples_with_site, pfas_sites, by = c("nearest_facility" = "facility", "geoid"))
+samples_site_df <- inner_join(samples_with_site, sites, by = c("nearest_facility" = "facility", "geoid"))
 ```
 
-
-
-## String Manipulation
-## Date time functions
-# Exploratory Data Analysis
-## Tables of Summary Statistics
-## Data Visualizations
-# Permutation or Randomization
-**Import your data into R.**
 
