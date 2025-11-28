@@ -1,0 +1,21 @@
+Variable,Description
+geoid,Geographic region ID with the first 2 digits being the state Federal Information Processing Standard (FIPS) code and the last 3 digits the county FIPS code
+longitude,Longitude coordinate of sample location
+latitude,Latitude coordinate of sample location
+facility,Name of the site
+county,County where the site is located
+address,Physical address of the project site
+city,City where the project is physically located
+zip_code,Zip code where the project is physically located
+type,Describes the kind of site by type
+residential_wells_sampled,"Indicates whether residential wells have, or will be sampled (Domains = Yes, No, TBD, N/A)"
+site_lead,Name of contact person
+site_lead_email,Contact person email
+site_lead_phone,Contact person phone number
+hyperlink,Web address to the site investigation summary
+location,Geographic location description of the site
+military,Indicates if the site is associated with the military
+facility_date,Date the site was published on the Michigan PFAS Action Response Team website
+site_background,Background information about the site
+drinking_water_information,Information about drinking water quality and safety
+anticipated_activities,The state of Michigan's planned or upcoming activities related to the site
