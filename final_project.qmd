@@ -1,0 +1,129 @@
+---
+title: "Final Project"
+author: "Kabin, Nishan, Udita"
+date: today
+format:
+  html:
+    self-contained: true
+    embed-resources: true
+    toc: true
+execute:
+  eval: true  # Evaluate code
+  echo: true  # Show code
+  warning: true
+  message: true
+---
+
+Load packages necessary for this activity using the code below.
+
+```{r}
+library(tidyverse)
+library(knitr)
+library(skimr)
+library(calendR)
+library(flextable)
+library(naniar)
+library(sf)
+```
+
+
+Importing the data from the csv files; there are four data files.
+
+```{r}
+pfas_sites <- read_csv("pfas_sites.csv")
+pfas_public_water <- read_csv("pfas_public_water_long.csv")
+pfas_surface_water <- read_csv("pfas_surface_water_long.csv")
+pfas_samples_with_hazard_index <- read_csv("hazard_index.csv")
+```
+# Data Dictionary
+
+
+
+# Data Cleaning
+
+## Data Transformation
+```{r}
+
+pfas_sites_sf <- pfas_sites |>
+  st_as_sf(coords = c("longitude", "latitude"),
+           crs = 4326,   # WGS84
+           remove = FALSE)
+
+pfas_samples_sf <- pfas_samples_with_hazard_index |>
+  st_as_sf(coords = c("longitude", "latitude"),
+           crs = 4326,
+           remove = FALSE)
+
+# EPSG:3591
+# NAD83(NSRS2007) / Michigan Oblique Mercator
+
+pfas_sites_sf   <- st_transform(pfas_sites_sf, 3591)
+pfas_samples_sf <- st_transform(pfas_samples_sf, 3591)
+```
+
+
+```{r}
+# Remove samples with missing geoid
+pfas_samples_sf <- pfas_samples_sf |>
+  filter(!is.na(geoid))
+
+geo_ids <- unique(pfas_samples_sf$geoid)
+
+```
+
+
+```{r}
+
+# For each geoId, match samples to nearest site in that geoId
+populate_nearest_facility <- function(samples, sites) {
+  if (nrow(sites) == 0) {
+    # No PFAS site in this county: keep NA
+    samples$nearest_facility <- NA
+    samples$distance_m      <- NA
+  } else {
+    # Index of nearest site in this county for each sample
+    idx <- st_nearest_feature(samples, sites)
+
+    samples$nearest_facility <- sites$facility[idx]
+
+    # Distance to that nearest site (element-wise)
+    samples$distance_m <- st_distance(samples, sites[idx, ],
+                                        by_element = TRUE) |>
+      as.numeric()
+  }
+  samples
+}
+
+samples_with_site <- map(geo_ids, function(g){
+    samples_g <- pfas_samples_sf |> filter(geoid == g)
+    sites_g   <- pfas_sites_sf   |> filter(geoid == g)
+    
+    return(populate_nearest_facility(samples_g, sites_g))
+} )
+
+```
+
+```{r}
+# Combine it into a single dataframe
+samples_with_site <- do.call(rbind, samples_with_site)
+samples_with_site 
+
+samples_with_site <- samples_with_site |>
+  st_drop_geometry()
+```
+
+## Merging Data Sets
+```{r}
+samples_site_df <- inner_join(samples_with_site, pfas_sites, by = c("nearest_facility" = "facility", "geoid"))
+```
+
+
+
+## String Manipulation
+## Date time functions
+# Exploratory Data Analysis
+## Tables of Summary Statistics
+## Data Visualizations
+# Permutation or Randomization
+**Import your data into R.**
+
