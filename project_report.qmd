@@ -1,0 +1,1074 @@
+---
+title: "Michigan PFAS Analysis"
+author: "Kabin, Nishan, Udita"
+date: today
+format:
+  html:
+    self-contained: true
+    embed-resources: true
+    toc: true
+execute:
+  eval: true  # Evaluate code
+  echo: true  # Show code
+  warning: false
+  message: false
+---
+
+From the state of Michigan’s website:
+
+*PFAS are a large group of man-made chemicals that include perfluorooctanoic acid (PFOA) and perfluorooctanesulfonic acid (PFOS). PFAS have been used globally during the past century in manufacturing, firefighting and thousands of common household and other consumer products. These chemicals are persistent in the environment and in the human body – meaning they don’t break down and they can accumulate over time. In recent years, experts have become increasingly concerned by the potential effects of high concentrations of PFAS on human health.*
+
+PFAS contamination in West Michigan has unfortunately made headlines, reminiscent of other environmental advocacy efforts like that of renowned whistleblower **Erin Brockovich**.
+
+There is a Michigan PFAS dataset available. This project in R focuses on analyzing the hazard index for the sites of interest and the samples taken from those sites and whether any trends and patterns appear in this dataset.
+
+```{r}
+#| echo: false
+# Load packages necessary for this activity using the code below.
+library(tidyverse)
+library(knitr)
+library(skimr)
+# library(calendR)
+library(flextable)
+library(naniar)
+library(purrr)
+library(sf)
+library(plotly)
+library(tigris)
+library(dplyr)
+library(leaflet)
+
+options(tigris_use_cache = TRUE)  
+options(tigris_class = "sf")
+```
+
+# Data Import and Data Dictionary
+
+Importing the data from the csv files; there are four data files, two files (`sites_main` and `samples_main`) containing the data and two files (`data_dict_sites` and `data_dict_samples`) containing the data description .
+
+```{r}
+sites_main <- read_csv("data/pfas_sites.csv")
+data_dict_sites <- read_csv("data/data_dict_sites.csv")
+samples_main <- read_csv("data/pfas_hazard_index.csv")
+data_dict_samples <- read_csv("data/data_dict_hazard.csv")
+```
+## Data dictionary for site
+```{r}
+data_type_sites <- tibble(Variable = names(sites_main), Type = map_chr(sites_main, typeof))
+
+data_dict_sites <- left_join(data_dict_sites, data_type_sites, by = c("Variable"))
+rm(data_type_sites)
+
+data_dict_sites |>
+  select(Variable, Type, Description) |>
+  flextable() |>
+  autofit()
+```
+
+## Data dictionary for samples
+```{r}
+data_type_samples <- tibble(Variable = names(samples_main), Type = map_chr(samples_main, typeof))
+
+data_dict_samples <- left_join(data_dict_samples, data_type_samples, by = c("Variable"))
+rm(data_type_samples)
+
+data_dict_samples |>
+  select(Variable, Type, Description) |>
+  flextable() |>
+  autofit()
+```
+
+## Patterns of missingness
+```{r}
+glimpse(sites_main)
+glimpse(samples_main)
+```
+
+```{r}
+skim(sites_main)
+skim(samples_main)
+```
+
+```{r}
+gg_miss_var(sites_main, show_pct = TRUE)
+gg_miss_var(samples_main, show_pct = TRUE)
+```
+
+Looking at these plots, it's clear that some variables have too much missing data to be useful for our analysis. We decided to drop `site_background`, `drinking_water_information`, `anticipated_activities`, and `location` from the `pfas_sites` dataset because the gaps in these columns would just get in the way of our work.
+
+```{r}
+sites <- sites_main |>
+  dplyr::select(-site_background, -drinking_water_information, -anticipated_activities, -location)
+
+samples <- samples_main
+```
+
+
+From the data we can also see that around 70 samples don't have geoids. Since they have the longitude and latitude information, let's see where these samples were taken from the map, and see if we can infer geoid based on the location information.
+
+Since these data have location information, let's convert them to simple features object using the sf package.
+
+```{r}
+mi_counties <- counties(state="MI", cb = TRUE, year = 2024, class = "sf")
+
+sites_sf <- sites |>
+  st_as_sf(coords = c("longitude", "latitude"),
+           crs = st_crs(mi_counties),   # WGS84
+           remove = FALSE)
+
+samples_sf <- samples |>
+  st_as_sf(coords = c("longitude", "latitude"),
+           crs = st_crs(mi_counties),
+           remove = FALSE)
+
+```
+
+```{r}
+samples_missing_geoid_sf <- samples_sf |>
+  filter(is.na(geoid))
+samples_present_geoid_sf <- samples_sf |>
+  filter(!is.na(geoid))
+```
+
+```{r}
+leaflet(options = leafletOptions(preferCanvas = TRUE)) |>
+  addProviderTiles("CartoDB.Positron") |>  # nice clean basemap
+
+  # Counties
+  addPolygons(
+    data = mi_counties,
+    weight = 1,
+    color = "#666666",
+    fill = FALSE,
+    opacity = 0.7,
+    group = "Counties"
+  ) |>
+
+  # All points (faded background)
+  addCircleMarkers(
+    data = samples_present_geoid_sf,
+    radius = 3,
+    fillOpacity = 0.5,
+    stroke = FALSE,
+    color = "gray",
+    group = "Points with GEOID"
+  ) |>
+
+  # Missing GEOID points (highlighted)
+  addCircleMarkers(
+    data = samples_missing_geoid_sf,
+    radius = 3,
+    fillOpacity = 0.8,
+    stroke = TRUE,
+    weight = 1,
+    color = "red",
+    popup = ~paste0(
+      "<b>Hazard index:</b> ", hazard_index, "<br>",
+      "<b>GEOID:</b> missing"
+    ),
+    group = "Missing GEOID"
+  ) |>
+
+  # Layers control
+  addLayersControl(
+    overlayGroups = c("Counties", "Points with GEOID", "Missing GEOID"),
+    options = layersControlOptions(collapsed = TRUE),
+    position = "topleft"
+  ) |>
+  
+
+  # Color Legend
+  addLegend(
+    position = "bottomright",
+    colors = c("gray", "red"),
+    labels = c("No", "Yes"),
+    title = "Missing GeoID",
+    opacity = 1
+  ) |>
+
+  # Scale bar
+  addScaleBar(position = "bottomleft") |>
+
+  # Title
+  addControl(
+    "<h4>PFAS Sample Locations in Michigan</h4>",
+    position = "topright"
+  ) |>
+
+  
+  # Zoom to Michigan
+  fitBounds(
+    lng1 = min(samples_sf$longitude, na.rm = TRUE),
+    lat1 = min(samples_sf$latitude, na.rm = TRUE),
+    lng2 = max(samples_sf$longitude, na.rm = TRUE),
+    lat2 = max(samples_sf$latitude, na.rm = TRUE)
+  )
+```
+
+From the above figure we can see that samples with missing geoid are the ones that lie just outside the border of the counties.
+
+## Assign geoid of the nearest county to the samples
+```{r}
+nearest_idx <- st_nearest_feature(samples_missing_geoid_sf, mi_counties)
+
+nearest_county <- mi_counties[nearest_idx, c("STATEFP", "COUNTYFP")]
+
+samples_imputed_geoid_sf <- samples_missing_geoid_sf |>
+  mutate(
+    geoid = paste0(nearest_county$STATEFP, nearest_county$COUNTYFP) |> as.numeric()
+  )
+
+samples_sf <- bind_rows(samples_present_geoid_sf, samples_imputed_geoid_sf)
+
+```
+
+# Data Cleaning
+
+## Data transformation and Merging
+
+Merging these datasets turned out to be trickier than expected. We couldn't use geoid directly because it identifies counties, not individual sites or samples. And while longitude and latitude were available, they didn't match exactly between the two tables—probably due to measurement differences or rounding.
+So we created a new facility column in the samples data to bridge the gap. Here's what we did: for each sample, we calculated the distance to every site in its county and assigned it to the nearest one. For samples missing a geoid, we found their closest site regardless of county boundaries and used that site's geoid and facility name.
+
+This approach required some assumptions about how samples relate to facilities, but it was necessary to get the two datasets linked together for analysis. Obviously, this introduces some uncertainty into the matching, but it was the best option we had given the data constraints. 
+
+
+```{r}
+geo_ids <- unique(samples_sf$geoid)
+
+# For each geoId, match samples to nearest site in that geoId
+populate_nearest_facility <- function(samples, sites) {
+  if (nrow(sites) == 0) {
+    # No PFAS site in this county: keep NA
+    samples$nearest_facility <- NA
+    samples$distance_m      <- NA
+  } else {
+    # Index of nearest site in this county for each sample
+    idx <- st_nearest_feature(samples, sites)
+
+    samples$nearest_facility <- sites$facility[idx]
+
+    # Distance to that nearest site (element-wise)
+    samples$distance_m <- st_distance(samples, sites[idx, ],
+                                        by_element = TRUE) |>
+      as.numeric()
+  }
+  samples
+}
+
+samples_with_site <- map(geo_ids, function(g){
+    samples_g <- samples_sf |> filter(geoid == g)
+    sites_g   <- sites_sf   |> filter(geoid == g)
+    
+    return(populate_nearest_facility(samples_g, sites_g))
+} )
+
+```
+
+```{r}
+# Combine it into a single dataframe and convert back to tibble object
+samples_with_site <- do.call(rbind, samples_with_site) |> st_drop_geometry()
+```
+
+```{r}
+samples_site_df <- inner_join(samples_with_site, sites, by = c("nearest_facility" = "facility", "geoid"))
+```
+
+```{r}
+#|echo: false
+
+library(readr)
+
+# Basic usage
+write_csv(samples_site_df, "data/samples_site.csv")
+```
+
+
+## String Manipulation
+
+```{r}
+unique(samples_site_df$county)
+```
+We noticed that some counties - such as `Ottawa County`, `Allegan County`, and `Muskegon County` — were appearing as separate categories because of inconsistent spacing in their names. To clean this up and keep the data consistent, we applied `str_to_title()` to standardize casing and used `str_squish()` to remove any extra spaces in key text fields like `system_name`, `nearest_facility`, and `county`.
+
+```{r}
+samples_site_df <- samples_site_df |>
+  mutate(system_name = str_squish(str_to_title(system_name)),
+         nearest_facility = str_squish(str_to_title(nearest_facility)),
+         county = str_squish(str_to_title(county)))
+
+```
+
+
+## Date time functions
+In the following step, we are converting the `sample_date` and `facility_date` columns from character strings to date-time format using the `ymd_hms()` function. After inspecting the data, we noticed that most entries were missing the hours, minutes, and seconds component, so we opted to extract only the year, month, and day using the `ymd()` function.
+
+```{r}
+#|warning: false
+
+#Before
+print(str_glue("Type of sample_date before conversion:{typeof(samples_site_df$sample_date)}"))
+
+samples_site_df <- samples_site_df |>
+  mutate(sample_date = ymd(ymd_hms(sample_date)),
+         facility_date =ymd(ymd_hms(facility_date)))
+
+print(str_glue("Type of sample_date after conversion: {typeof(samples_site_df$sample_date)}"))
+```
+
+In the following step, we are creating a new column, `years_since_sample`, which calculates how many years have passed since each water sample was collected. This helps quantify the age of each sample, which can be important for analyzing trends over time, understanding the relevance of the `hazard_index`, and identifying whether older samples might need to be prioritized for re-sampling or further investigation.
+
+```{r}
+samples_site_df <- samples_site_df |>
+  mutate(years_since_sample =  interval(sample_date, today()) / years(1))
+```
+
+
+# Exploratory Data Analysis
+
+This analysis identifies counties with the highest hazard index values. We filtered for samples exceeding a hazard index of 1, grouped by county, and extracted the maximum hazard index for each. Counties are ranked by their peak contamination level, giving us a quick view of which areas have the most severe contamination.
+
+```{r}
+samples_site_df |>
+  filter(hazard_index > 1) |>
+  group_by(county) |>
+  summarize(max_hazard_index = max(hazard_index, na.rm = TRUE)) |>
+  arrange(-max_hazard_index) |>
+  flextable() |>
+  autofit()
+```
+
+Here, we are exploring the total number of samples taken in each county. Higher values of n indicates higher sampling effort in the county.
+
+```{r}
+samples_site_df |>
+  count(county) |>
+  arrange(-n)
+```
+
+From the table above, it can be seen that the Oakland county has highest sampling effort followed by Allegan, Kent, Jackson and so on.
+
+## Tables of Summary Statistics
+We are exploring county-level summary of the drinking water sample data in the following step. Using `group_by()` and `summarise()`, we calculated key statistics (mean, standard deviation, median, max, min) for each county.
+
+```{r}
+#County level summary statistics
+county_summary <- samples_site_df |>
+  group_by(county) |>
+  summarise( n_sites = n(),
+            mean_hi = round(mean(hazard_index, na.rm = TRUE), digits = 2),
+            std_hi = round(sd(hazard_index, na.rm = TRUE), digits = 2),
+            median_hi = round(median(hazard_index, na.rm = TRUE), digits = 2),
+            max_hi = round(max(hazard_index, na.rm = TRUE), digits = 2),
+            min_hi = round(min(hazard_index, na.rm = TRUE), digits = 2)) |>
+  arrange(-n_sites) 
+
+# Identifying counties where all water samples have a hazard index of zero
+for (i in 1:nrow(county_summary)) 
+{
+  if (county_summary$max_hi[i] == 0) {
+    print(str_glue("All the samples in {county_summary$county[i]} have 0 hazard index."))
+  }
+}
+
+```
+This output has highlighted the county with no explicitly detected hazards, which means that these counties do not pose a measurable health risk according to EPA guidelines. Also, high standard deviation in some county suggests that mean hazard index might not accurately represent what is happening at most sites i.e. some samples might have much higher hazard indices than others, suggesting uneven contamination.
+
+```{r}
+county_summary
+```
+
+The following exploration highlights the sites in the Kent county where at least one sample has a non-zero hazard index.
+
+```{r}
+kent_county_sites <- samples_site_df |>
+  dplyr::filter(county == "Kent County") |>
+  group_by(nearest_facility) |>
+  summarise(n_samples = n(),
+            mean_hi = round(mean(hazard_index, na.rm = TRUE), digits = 2),
+            std_hi = round(sd(hazard_index, na.rm = TRUE), digits = 2),
+            median_hi = round(median(hazard_index, na.rm = TRUE), digits = 2),
+            max_hi = round(max(hazard_index, na.rm = TRUE), digits = 2),
+            min_hi = round(min(hazard_index, na.rm = TRUE), digits = 2) )
+  
+
+kent_county_sites |>
+  filter(!(max_hi == 0)) |>
+  flextable() |>
+  set_caption("Table 1: Summary statistics for sites in Kent county")
+
+```
+
+Displaying the county having `hazard_index` greater than 1.
+```{r}
+county_summary |>
+  dplyr::filter(max_hi > 1) |>
+  arrange(-max_hi) |>
+  slice_head(n = 15) |>
+  flextable() |>
+  set_caption("Table 2: Summary statistics of counties having hazard index greater than one")
+```
+
+High standard deviation in some county suggests that mean hazard index might not accurately represent what is happening at most sites i.e. some samples might have much higher hazard indices than others, suggesting uneven contamination. In the above table, `n` represents the total number od drinking water sample in each county. Even if the median is low in some counties, the maximum value shows the worst-case exposure, which is critical for environmental health assessments as it helps to identify hotspots or locations needing urgent attention.
+
+## Data Visualizations
+
+### Distribution of hazard index
+
+```{r}
+dist_hazard <- samples_site_df |>
+  ggplot( aes(hazard_index)) +
+  geom_histogram(color = "black", fill = "#F0E442", bins = 50) +
+  scale_x_continuous(limits =  c(0,38)) +
+  scale_y_continuous(limits =  c(0,10)) +
+  theme_minimal() +
+  labs(title = "Distribution of Hazard Index",
+       x = "Hazard Index",
+       y = "Count",
+       caption = "EGLE website: Michigan PFAS data") +
+  theme(text = element_text(face = "bold"))
+
+dist_hazard
+```
+From this visualization, we can see a highly right-skewed distribution. most of the samples are below the the threshold of concern (HI < 1.0). However, outliers up to 10.0 indicate localized contamination hotspots requiring immediate intervention.
+
+### Visualizing number of samples for each county based on the area
+
+```{r}
+mi_counties <- mi_counties |>
+  mutate(area_km2 = as.numeric(st_area(geometry)) / 1e6)
+
+#Samples count per county
+sample_count <- samples_site_df |>
+  mutate(
+    county = str_replace(county, "Saint Clair County", "St. Clair County"),
+    county = str_replace(county, "Oceana & Newaygo County", "Newaygo County")
+  ) |>
+  group_by(county, geoid) |>
+  summarise(n_samples = n())
+
+```
+
+```{r}
+sample_count <- sample_count |>
+  mutate(geoid = as.character(geoid))
+```
+
+```{r}
+# Merging area + sample counts
+county_sampling <- mi_counties |>
+  select(NAME, GEOID, area_km2) |>
+  left_join(sample_count, by = c("GEOID" = "geoid"))
+```
+
+```{r}
+# creating sampling density
+county_sampling <- county_sampling |>
+  mutate(samples_per_100sqkm = n_samples / (area_km2 / 100))
+
+```
+
+```{r}
+ggplot(county_sampling, aes(x = area_km2, y = n_samples)) +
+  geom_point(size = 3, color = "#CC79A7") +
+  labs(title = "County Area vs Number of Samples",
+    x = "County Area (km²)",
+    y = "Number of Water Samples",
+    caption = "EGLE website: Michigan PFAS data") +
+  theme_minimal() +
+  theme(text = element_text(face = "bold"))
+```
+From the above scatter plot, we didn't find any strong correlation between county area and number of samples taken. Large counties don't necessarily have more samples, and small counties aren't systematically under-sampled.The largest counties (20,000-35,000 km²) have relatively few samples (< 30) which may indicate potential gap in monitoring coverage for geographically extensive areas.
+
+### Bar chart showing total number of samples taken in each county
+
+```{r}
+county_sampling |>
+  ggplot(aes( x = reorder(NAME, -n_samples),
+              y = n_samples)) +
+  geom_col(color = "black", fill = "#009E73") +
+  scale_y_continuous(expand = expansion(mult = c(0.0, 0.1)))  +
+  labs(x = "County",
+       y = "Number of Samples",
+       title = "Samples per County (Ascending Order)",
+       caption = "EGLE website: Michigan PFAS data") +
+  theme(axis.text.x = element_text(size = 6, angle = 60, hjust = 1),
+        text = element_text(face = "bold"))
+```
+From the bar chart above, we found the uneven sampling effort across Michigan counties, which ranges from 80 samples in the most-sampled county to zero in several counties. Oakland county leads with 80 samples indicating a major contamination concern or monitoring focus which is followed by Allegan, Kent, Jackson, Livingston and so on.
+
+### Visulazing the number of samples taken and maximum hazard index reported for top 50 sites.
+
+```{r}
+site_summary <- samples_site_df |>
+  group_by(nearest_facility) |>
+  summarise(
+    n_samples = n(),
+    max_hi = max(hazard_index, na.rm = TRUE),
+    .groups = "drop"
+  ) |>
+  arrange(-n_samples) |>
+  slice_head(n = 50)
+```
+
+```{r}
+#| fig-height: 5.5
+
+site_summary |>
+  
+  ggplot(aes(
+    x = reorder(nearest_facility, n_samples),
+    y = n_samples,
+    size = max_hi 
+  )) +
+  geom_point(alpha = 0.9,  color = "#D55E00") +
+  scale_size_continuous(range = c(2, 12)) +
+  labs(title = "Maximum Hazard Index and Sampling Frequency by Site",
+    x = "Site (Nearest Facility)",
+    y = "Number of samples",
+    size = "Maximum Hazard Index",
+    caption = "EGLE website: Michigan PFAS data") +
+  theme_minimal() +
+  theme(
+    axis.text.x = element_text(size = 6, angle = 60, hjust = 1),
+    plot.title = element_text(face = "bold"),
+    text = element_text(face = "bold"),
+    legend.position = "bottom"
+  )
+```
+
+The size of each point - indicating the magnitude of hazard index - seems to be distributed uniformly when we plot the number of samples across sites arranged on the ascending order. This suggests that there's little relationship between monitoring intensity and contamination severity. However, we do have to mention that the site associated with the sample with maximum hazard index has large no. of samples.
+
+### Visualizing sampling effort based on month
+
+```{r}
+samples_site_df <- samples_site_df |>
+  mutate(
+    month_name = month(sample_date, label = TRUE, abbr = FALSE)
+  )
+```
+
+```{r}
+bar_date <- samples_site_df |>
+  filter(!is.na(month_name)) |>
+  count(month_name) |>
+  ggplot(aes(x = month_name, y = n)) +
+  geom_col(color = "black",fill = "#56B4E9") + # #56B4E9 is color blind friendly blue
+  labs(
+    title = "Sampling Effort Over Time",
+    x = "Month",
+    y = "Number of Samples",
+    caption = "EGLE website: Michigan PFAS data"
+  ) +
+  theme_minimal() +
+  theme(
+    axis.text.x = element_text(angle = 60, hjust = 1, size = 8),
+    text = element_text(face = "bold")
+  )
+
+bar_date
+```
+From the visualization above, we can notice the seasonal pattern on the sampling effort. June-August shows higher sampling activity, which suggests summer months are more active in terms of the sampling effort. Winter months (January-May) show reduction in compared to peak summer months whereas fall season seems to be m more active than the winter season.
+
+# Permuation or Randomization Test
+
+```{r}
+samples_site_df |>
+  group_by(nearest_facility) |>
+  summarize(mean_hazard_index = mean(hazard_index, na.rm=TRUE),
+            var = var(hazard_index, na.rm=TRUE),
+            number_of_samples = n()) |>
+  filter(number_of_samples > 5 & mean_hazard_index > 0.5) |>
+  flextable()
+```
+
+
+```{r}
+
+# Calculating standard deviations and variances for each group
+trial_data <- samples_site_df |> 
+  filter(nearest_facility %in% c("Pellston Regional Airport", "Manistee Blacker Airport"))
+
+trial_data <- trial_data |> 
+  dplyr::mutate(facility = fct_relevel(nearest_facility, "Pellston Regional Airport", "Manistee Blacker Airport")) |>
+  select(facility, hazard_index)
+
+trial_data |>
+  group_by(facility) |> 
+  summarize(Mean = mean(hazard_index),
+            n = n(),
+            SD = sd(hazard_index),
+            Variance = var(hazard_index)) |> 
+  flextable() |> 
+  colformat_double(digits = 3) |> 
+  autofit()
+```
+We selected Pellston Regional Airport and Manistee Blacker Airport for our hypothesis test. Pellston has a mean hazard index of 2.011 compared to Manistee Blacker's 0.731—a substantial difference. The data at Pellston is highly variable (variance = 66.701) compared to Manistee Blacker (variance = 6.632), meaning Pellston's readings are much more scattered. With 18 samples from Pellston and 13 from Manistee Blacker, we have enough data to conduct the test despite this difference in variability.
+
+```{r}
+# Two-sample t-test
+ttest_result <- t.test(formula = hazard_index ~ facility,
+                       data = trial_data,
+                       alternative = "greater")
+```
+
+
+
+```{r}
+# Number of permutations to do
+n_permutations <- 5000
+
+# Instantiating vector for test statistics
+permutation_statistics <- vector(length = n_permutations)
+
+# Calculating t-test statistic for each permutation
+for(p in 1:n_permutations) {
+  permutation_statistics[p] <- t.test(formula = hazard_index ~ facility,
+                                      alternative = "greater",
+                                      data = trial_data |> 
+    mutate(facility = sample(facility, replace = FALSE))) |> 
+    broom::tidy() |> 
+    pull(statistic)
+}
+```
+
+
+```{r}
+tibble(t_stat = permutation_statistics)|>
+  ggplot(aes(x = t_stat)) +
+  geom_histogram(color = "white") +
+  scale_y_continuous(expand = expansion(mult = c(0, 0.1))) +
+  geom_vline(xintercept = quantile(permutation_statistics,
+                                   probs = 0.95),
+             color = "red", linetype = "solid") +
+  geom_vline(xintercept = ttest_result$statistic,
+             color = "dodgerblue", linetype = "dotted") +
+  labs(title = "Randomization test null distribution",
+       x = "Test Statistic",
+       y = "Frequency")
+```
+
+```{r}
+janitor::tabyl(permutation_statistics >= ttest_result$statistic)
+```
+
+**Formal Statement of our hypothesis for the randomization test**
+
+Our hypothesis are given by
+
+$$H_0 : \mu_{Pellston} = \mu_{Manistee}$$
+
+$$H_a : \mu_{Pellston} > \mu_{Manistee}$$ 
+
+where,
+$\mu_{Pellston}$ is the average hazard index of the Pellston Regional Airport site, and $\mu_{Manistee}$ is the average hazard index of the Manistee Blacker Airport site.
+
+**Decision**: Since p-value = 0.3978 > 0.05, we fail to reject the null hypothesis.
+
+**Interpretation in context**: We don't have enough statistical evidence to conclude that the mean hazard index is different between Pellston Regional Airport and Manistee Blacker Airport. The observed difference could reasonably be due to random chance.
+
+Despite Pellston Regional Airport showing a higher mean hazard index (2.011 vs. 0.731), our permutation test failed to reject the null hypothesis. The substantial variability in Pellston's measurements likely contributes to this result, the high scatter in the data means the observed mean difference could reasonably occur by random chance. This suggests that while Pellston may have higher average contamination, the difference is not statistically significant given the data's variability.
+
+# Conclusion
+In this project, we combined two PFAS-related datasets—one describing contamination sites and one describing drinking water samples—to explore spatial and temporal patterns of PFAS hazard in Michigan. We began by inspecting data quality and patterns of missingness, then dropped variables with large amounts of missing data that were not essential to our analysis (`site_background`, `drinking_water_information`, `anticipated_activities`, and `location`). We also addressed missing GEOID values in the sampling dataset by assigning each point to the nearest county using spatial proximity. Visual inspection of the map confirmed that these samples tended to fall just outside county boundaries, so nearest-county imputation was a reasonable, if imperfect, choice.
+
+Because neither GEOID nor latitude/longitude alone could directly link sites to samples, we created a new feature, `nearest_facility`, in the samples data. Within each county, we matched each sample to the geographically closest PFAS site using Euclidean distance. For samples with missing GEOID, we matched them to the nearest site across all counties and inherited that site’s GEOID. This merging strategy rests on the assumption that samples are most likely associated with the closest facility, which introduces some uncertainty but allowed us to construct a unified dataset for downstream analysis and visualization.
+
+Our exploratory analysis showed that most hazard index (HI) values were low, with a highly right-skewed distribution and a large concentration of samples below the EPA threshold of concern (HI < 1). However, a small number of sites and counties exhibited much higher maximum hazard index values, indicating localized contamination hotspots that may warrant closer monitoring or remediation. County-level summaries revealed that a few counties have many more samples than others, and the bar chart of samples per county highlighted clear disparities in monitoring effort. Some large counties had relatively few samples, suggesting potential gaps in spatial coverage.
+
+At the site level, we examined both the number of samples and the maximum hazard index. When we plotted the top 50 sites with point size representing maximum hazard index, the sizes appeared to be spread fairly uniformly across sites ordered by sample count. This suggests there is little systematic relationship between monitoring intensity (number of samples) and contamination severity (maximum HI). In other words, sites with more samples do not consistently show higher hazard indices. However, there is an important exception: the site associated with the single highest hazard index does have a relatively large number of samples, indicating that some high-risk locations may indeed draw more monitoring attention.
+
+We also examined temporal patterns in sampling effort. The plot of sampling counts by month (Figure 2: sampling effort by month) showed a clear seasonal pattern, with more intensive sampling in the summer months (June–August) and reduced activity in winter. This pattern likely reflects practical field constraints (e.g., weather and access) as well as monitoring priorities. The `years_since_sample` variable further emphasized that some samples are relatively old, which is important when interpreting current risk and planning future monitoring.
+
+Finally, we conducted a permutation (randomization) test comparing hazard index values at Pellston Regional Airport and Manistee Blacker Airport. Although Pellston showed a higher mean hazard index and much greater variability, the permutation test failed to reject the null hypothesis at the 5% significance level. This suggests that, given the variability and sample sizes, we do not have strong statistical evidence that Pellston’s mean hazard index is truly higher than Manistee’s—it could plausibly be due to random variation. This result underscores the importance of considering both effect size and variability, and not relying solely on raw differences in means.
+
+Overall, our analysis paints a nuanced picture: most drinking water samples in Michigan show low PFAS hazard indices, but there are notable hotspots, uneven sampling across space and time, and nontrivial uncertainty in how samples are linked to specific facilities and counties. These limitations mean that our findings should be interpreted with caution. 
+
+# Contributions of each group member
+
+All members contributed equally to the planning and overall success of the project. Nishan and Kabin collaborated on designing the data transformation strategy, with Nishan carrying out most of the coding for its implementation. The entire group contributed to planning, while Udita mainly contributed to the implementation of data cleaning and exploratory data analysis. Nishan and Kabin worked together to design the layout and functionality of the interactive dashboard, with Kabin primarily implementing it in code. Each member documented their respective components to ensure clarity and reproducibility. Udita also ensured that the final project satisfied all requirements outlined in the rubric and follows provided structure. Most implementation tasks were completed collaboratively in pairs, reinforcing shared understanding and joint problem-solving throughout the project.
+
+
+
+# Dashboard Code
+
+```{r}
+#|eval: false
+
+library(shiny)
+library(leaflet)
+library(plotly)
+library(ggplot2)
+library(dplyr)
+
+
+samples_site_df <- read_csv("data/samples_site.csv")
+
+# Sites and their sample locations
+sites_dash <- samples_site_df |>
+  mutate(site = nearest_facility,
+         lat = latitude.y,
+         lon = longitude.y) |>
+  group_by(site, lat, lon) |>
+  summarize(max_hazard_index = max(hazard_index, na.rm = TRUE)) |>
+  select(site, lat, lon, max_hazard_index) |>
+  dplyr::distinct()
+
+samples_dash <- samples_site_df |>
+  mutate(site = nearest_facility,
+         sample_name = system_name,
+         lat = latitude.x,
+         lon = longitude.x) |>
+  select(site, sample_name, lat, lon, pfhxs_result, pfna_result, hfpoda_result, pfbs_result, hazard_index)
+
+# UI
+ui <- fluidPage(
+  titlePanel("Michigan PFAS Dashboard"),
+  
+  sidebarLayout(
+    sidebarPanel(
+      width = 4,
+      h4("Instructions"),
+      p("Click on a site marker to zoom in and view samples for that site."),
+      actionButton("reset_view", "Reset Map View", 
+                   class = "btn-primary", 
+                   style = "margin-top: 10px;"),
+      actionButton("view_report", "View Analysis Report",
+                   class = "btn-info",
+                   style = "margin-top: 10px;"),
+      hr(),
+      uiOutput("site_info")
+    ),
+    
+    mainPanel(
+      width = 8,
+      leafletOutput("main_map", height = "400px"),
+      hr(),
+      fluidRow(
+        column(6,
+               conditionalPanel(
+                 condition = "output.has_nonzero_samples",
+                 plotlyOutput("plot1", height = "350px")
+               ),
+               conditionalPanel(
+                 condition = "!output.has_nonzero_samples",
+                 div(style = "padding: 50px; text-align: center;",
+                     h4("All samples from this site are safe (Hazard Index = 0)"))
+               )
+        ),
+        column(6,
+               conditionalPanel(
+                 condition = "output.has_nonzero_samples",
+                 plotlyOutput("plot2", height = "350px")
+               )
+        )
+      )
+    )
+  )
+)
+
+# Server
+server <- function(input, output, session) {
+  
+  # Reactive value to store selected site
+  selected_site <- reactiveVal(NULL)
+  
+  sites_hazard_color <- function(hazard_index) {
+    sapply(hazard_index, function(hi) {
+      if (hi == 0) {
+        return("#c0c0c0")  # Blue for zero
+      } else if (hi > 0 && hi <= 1) {
+        return("#FFE08F")  # Yellow for 0-1
+      } else {
+        # Gradient from orange to red for values > 1
+        max_hi <- max(sites_dash$max_hazard_index, na.rm = TRUE)
+        ratio <- min((hi - 1) / (max_hi - 1), 1)
+        
+        colorRampPalette(c("#FF6C0C", "red"))(100)[round(ratio * 99) + 1]
+      }
+    })
+  }
+  
+  samples_hazard_color <- function(hazard_index) {
+    sapply(hazard_index, function(hi) {
+      if (hi == 0) {
+        return("#000000")  # Black for zero for visibility
+      } else if (hi > 0 && hi <= 1) {
+        return("#FFE08F")  # Yellow for 0-1
+      } else {
+        # Gradient from orange to red for values > 1
+        max_hi <- max(samples_dash$hazard_index, na.rm = TRUE)
+        ratio <- min((hi - 1) / (max_hi - 1), 1)
+        
+        colorRampPalette(c("#FF6C0C", "red"))(100)[round(ratio * 99) + 1]
+      }
+    })
+  }
+  
+  
+  # Initial map render
+  output$main_map <- renderLeaflet({
+    leaflet() |>
+      addTiles() |>
+      clearControls() |> # Clear old legend first
+      addLegend(
+        position = "bottomright",
+        colors = c("#c0c0c0", "#000000", "#FFE08F", "#FF6C0C", "red"),
+        labels = c("HI = 0 (site)", "HI = 0 (sample)", "0 < HI ≤ 1", "HI > 1 (lower)", "HI > 1 (higher)"),
+        title = "Hazard Index",
+        opacity = 1
+      ) |>
+      addPolygons(
+        data = mi_counties,
+        color = "#A2AF9B",
+        weight = 1,
+        fillOpacity = 0,
+        label = ~NAME
+      ) |>
+      addCircleMarkers(
+        data = sites_dash,
+        lng = ~lon, 
+        lat = ~lat, 
+        layerId = ~site,
+        radius = 6,
+        color = ~sites_hazard_color(max_hazard_index),
+        fillColor = ~sites_hazard_color(max_hazard_index),
+        fillOpacity = 0.5,
+        popup = ~paste("<b>", site, "</b><br>Click to view samples")
+      ) |>
+      setView(
+        lng = mean(c(min(sites_dash$lon), max(sites_dash$lon))),
+        lat = mean(c(min(sites_dash$lat), max(sites_dash$lat))),
+        zoom = 6  
+      )
+  })
+  
+  # Handle report viewing
+  observeEvent(input$view_report, {
+    showModal(modalDialog(
+      title = "Analysis Report",
+      size = "l",  # large modal
+      easyClose = TRUE,
+      footer = modalButton("Close"),
+      tags$iframe(
+        src = "./www/Final_project.html",
+        width = "100%",
+        height = "600px",
+        frameborder = 0
+      )
+    ))
+  })
+  
+  # Handle site marker clicks
+  observeEvent(input$main_map_marker_click, {
+    click <- input$main_map_marker_click
+    
+    if (!is.null(click$id)) {
+      site_name <- click$id
+      selected_site(site_name)
+      
+      # Get site and sample data
+      selected_site_data <- sites_dash |> filter(site == site_name) # only one
+      sample_dash_subset <- samples_dash |> filter(site == site_name)
+      
+      # Update map: zoom to site and show samples
+      map_proxy <- leafletProxy("main_map") |>
+        clearMarkers() |>
+        clearShapes() |>
+        clearControls() |> # Clear old legend first
+        addLegend(
+          position = "bottomright",
+          colors = c("#c0c0c0", "#000000", "#FFE08F", "#FF6C0C", "red"),
+          labels = c("HI = 0 (site)", "HI = 0 (sample)", "0 < HI ≤ 1", "HI > 1 (lower)", "HI > 1 (higher)"),
+          title = "Hazard Index",
+          opacity = 1
+        ) |>
+        addPolygons(
+          data = mi_counties,
+          color = "#A2AF9B",
+          weight = 1,
+          fillOpacity = 0,
+          label = ~NAME
+        ) |>
+        addCircleMarkers(
+          data = sites_dash,
+          lng = ~lon, 
+          lat = ~lat, 
+          layerId = ~site,
+          radius = 6,
+          color = ~sites_hazard_color(max_hazard_index),
+          fillColor = ~sites_hazard_color(max_hazard_index),
+          fillOpacity = 0.5,
+          popup = ~paste("<b>", site, "</b><br>Click to view samples")
+        ) |>
+        addCircleMarkers(
+          data = sample_dash_subset,
+          lng = ~lon,
+          lat = ~lat,
+          radius = 2,
+          color = ~samples_hazard_color(hazard_index),
+          fillColor = ~samples_hazard_color(hazard_index),
+          fillOpacity = 1,
+          popup = ~paste("<b>", sample_name, "</b><br>",
+                         "Hazard Index:", round(hazard_index, 2))
+        )
+      # Add lines connecting site to each sample
+      for (i in 1:nrow(sample_dash_subset)) {
+        map_proxy <- map_proxy |>
+          addPolylines(
+            lng = c(selected_site_data$lon, sample_dash_subset$lon[i]),
+            lat = c(selected_site_data$lat, sample_dash_subset$lat[i]),
+            color = "gray",
+            weight = 2,
+            opacity = 0.5,
+            dashArray = "5, 5"
+          )
+      }
+      
+      map_proxy |>
+        fitBounds(
+          lng1 = min(c(sample_dash_subset$lon,selected_site_data$lon), na.rm = TRUE),
+          lat1 = min(c(sample_dash_subset$lat,selected_site_data$lat), na.rm = TRUE),
+          lng2 = max(c(sample_dash_subset$lon,selected_site_data$lon), na.rm = TRUE),
+          lat2 = max(c(sample_dash_subset$lat,selected_site_data$lat), na.rm = TRUE)
+        )
+    }
+  })
+  
+  # Reset map view
+  observeEvent(input$reset_view, {
+    selected_site(NULL)
+    
+    leafletProxy("main_map") |>
+      clearMarkers() |>
+      addTiles() |>
+      clearControls() |> # Clear old legend first
+      addLegend(
+        position = "bottomright",
+        colors = c("#c0c0c0", "#000000", "#FFE08F", "#FF6C0C", "red"),
+        labels = c("HI = 0 (site)", "HI = 0 (sample)", "0 < HI ≤ 1", "HI > 1 (lower)", "HI > 1 (higher)"),
+        title = "Hazard Index",
+        opacity = 1
+      ) |>
+      addCircleMarkers(
+        data = sites_dash,
+        lng = ~lon, 
+        lat = ~lat, 
+        layerId = ~site,
+        radius = 6,
+        color = ~sites_hazard_color(max_hazard_index),
+        fillColor = ~sites_hazard_color(max_hazard_index),
+        fillOpacity = 0.5,
+        popup = ~paste("<b>", site, "</b><br>Click to view samples")
+      ) |>
+      setView(
+        lng = mean(c(min(sites_dash$lon), max(sites_dash$lon))),
+        lat = mean(c(min(sites_dash$lat), max(sites_dash$lat))),
+        zoom = 6  
+      )
+  })
+  
+  # Site info panel
+  output$site_info <- renderUI({
+    if (is.null(selected_site())) {
+      div(
+        h5("No site selected"),
+        p("Click on a site marker to view details.")
+      )
+    } else {
+      site_samples <- samples_dash |> filter(site == selected_site())
+      div(
+        h4(paste("Site:", selected_site())),
+        p(strong("Number of samples:"), nrow(site_samples)),
+        p(strong("Min hazard index:"), round(min(site_samples$hazard_index, na.rm=TRUE), 2)),
+        p(strong("Max hazard index:"), round(max(site_samples$hazard_index, na.rm=TRUE), 2)),
+        p(strong("Mean hazard index:"), round(mean(site_samples$hazard_index, na.rm=TRUE), 2)),
+        p(strong("Standard deviation hazard index:"), round(sd(site_samples$hazard_index, na.rm=TRUE), 2)),
+        p(strong("Median hazard index:"), round(median(site_samples$hazard_index, na.rm=TRUE), 2)),
+      )
+    }
+  })
+  
+  # Add this reactive to check for non-zero samples
+  output$has_nonzero_samples <- reactive({
+    if (is.null(selected_site())) {
+      return(TRUE)  # Show default plots when no site selected
+    }
+    
+    nonzero_count <- samples_dash %>%
+      filter(site == selected_site() & hazard_index > 0) %>%
+      nrow()
+    
+    return(nonzero_count > 0)
+  })
+  
+  outputOptions(output, "has_nonzero_samples", suspendWhenHidden = FALSE)
+  
+  # First plot
+  output$plot1 <- renderPlotly({
+    if (is.null(selected_site())) {
+      
+      first_plot <- dist_hazard
+      
+    } else {
+      first_plot <- samples_dash |> 
+        filter(site == selected_site()) |>
+        ggplot(aes(y = hazard_index)) + 
+        geom_boxplot() +
+        labs(title = str_glue("Distribution of Hazard Index for {selected_site()}"),
+             y = "Hazard Index")
+      
+    }
+    ggplotly(first_plot) |>
+      layout(
+        xaxis = list(autorange = TRUE),
+        yaxis = list(autorange = TRUE)
+      )
+  })
+  
+  # Second Plot
+  output$plot2 <- renderPlotly({
+    if (is.null(selected_site())) {
+      
+      second_plot <- bar_date
+      
+    } else {
+      samples_dash_scaled <- samples_dash |>
+        filter(site == selected_site() & hazard_index > 0) |>
+        mutate(pfhxs_result = pfhxs_result/10,
+               pfna_result = pfna_result/10,
+               hfpoda_result = hfpoda_result/10,
+               pfbs_result = pfbs_result/2000) |>
+        pivot_longer(cols = ends_with("result"), 
+                     names_to = "factor", 
+                     values_to = "value") |>
+        group_by(sample_name)
+      
+      
+      # Plot
+      second_plot <- ggplot(samples_dash_scaled, aes(x = sample_name, y = value, fill = factor)) +
+        geom_col(position = "stack") +
+        scale_fill_brewer(palette = "Set2") +
+        coord_flip() + 
+        labs(title = "Hazard Index Composition by Sample",
+             subtitle = "For samples with non-zero hazard index",
+             y = "Hazard Index",
+             x = "Sample Name",
+             fill = "GenX Chemicals") + 
+        theme(legend.position = "bottom")
+    }
+    
+    ggplotly(second_plot) |>
+      layout(legend = list(
+        orientation = "h",  # horizontal
+        x = 0.5,            # center horizontally
+        xanchor = "center",
+        y = -0.4            # position below plot
+      ))
+  })
+}
+
+# Run the app
+shinyApp(ui, server)
+```
+
+

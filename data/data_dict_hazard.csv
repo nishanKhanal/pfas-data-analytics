@@ -1,0 +1,12 @@
+Variable,Description
+geoid,Geographic region ID with the first 2 digits being the state Federal Information Processing Standard (FIPS) code and the last 3 digits the county FIPS code
+latitude,Sample site latitude
+longitude,Sample site longitude
+system_name,Name of water supply system
+system_type,Type of water supply system
+sample_date,The date that the sample was collected
+pfhxs_result,PFHxS concentration in the sample measured in parts per trillion (ppt or ng/L)
+pfna_result,PFNA concentration in the sample measured in parts per trillion (ppt or ng/L)
+hfpoda_result,HFPO-DA concentration in the sample measured in parts per trillion (ppt or ng/L)
+pfbs_result,PFBS concentration in the sample measured in parts per trillion (ppt or ng/L)
+hazard_index,Hazard index
